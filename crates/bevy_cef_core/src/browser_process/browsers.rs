@@ -186,7 +186,9 @@ impl Browsers {
             )),
             Some(&uri.into()),
             Some(&BrowserSettings {
-                windowless_frame_rate: 60,
+                // Where begin frames are sent by the app, they set the rate, and this is only a
+                // ceiling, high enough for displays faster than 60 Hz.
+                windowless_frame_rate: if EXTERNAL_BEGIN_FRAME { 240 } else { 60 },
                 ..Default::default()
             }),
             Self::create_extra_info(initialize_scripts).as_mut(),
