@@ -16,6 +16,7 @@ impl Plugin for WebviewCoreComponentsPlugin {
             .register_type::<HostWindow>()
             .register_type::<ZoomLevel>()
             .register_type::<AudioMuted>()
+            .register_type::<WebviewHidden>()
             .register_type::<PreloadScripts>()
             .register_type::<WebviewDpr>()
             .register_type::<WebviewTextureTarget>()
@@ -138,6 +139,12 @@ pub struct ZoomLevel(pub f64);
 #[derive(Reflect, Component, Debug, Copy, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[reflect(Component, Debug, Default, Serialize, Deserialize)]
 pub struct AudioMuted(pub bool);
+
+/// Whether the webview is out of sight. While hidden, CEF stops painting it and throttles its
+/// timers; the texture keeps the last frame it painted.
+#[derive(Reflect, Component, Debug, Copy, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[reflect(Component, Debug, Default, Serialize, Deserialize)]
+pub struct WebviewHidden(pub bool);
 
 /// This component is used to preload scripts in the webview.
 ///

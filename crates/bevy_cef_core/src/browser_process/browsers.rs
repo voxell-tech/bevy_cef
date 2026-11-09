@@ -680,6 +680,17 @@ impl Browsers {
         }
     }
 
+    /// Tells the specified webview whether it is out of sight.
+    ///
+    /// ## Reference
+    ///
+    /// - [`CefBrowserHost::WasHidden`](https://cef-builds.spotifycdn.com/docs/122.0/classCefBrowserHost.html)
+    pub fn set_hidden(&self, webview: &Entity, hidden: bool) {
+        if let Some(browser) = self.browsers.get(webview) {
+            browser.host.was_hidden(hidden as _);
+        }
+    }
+
     /// Returns whether the audio of the specified webview is muted.
     ///
     /// Returns `None` when the webview has no browser.
