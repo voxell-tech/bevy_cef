@@ -27,6 +27,11 @@ impl ProcessMessageHandler for BrpHandler {
     }
 
     fn handle_message(&self, _browser: &mut Browser, frame: &mut Frame, args: Option<ListValue>) {
+        // A page from the web never reaches the app's world, even from a renderer that
+        // binds `cef.brp` where it should not.
+        if !crate::render_process::render_process_handler::is_internal(&frame.url().into_string()) {
+            return;
+        }
         if let Some(args) = args
             && let Ok(request) = serde_json::from_str::<BrpRequest>(&args.string(1).into_string())
         {

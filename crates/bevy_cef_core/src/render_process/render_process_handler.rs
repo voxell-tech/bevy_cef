@@ -114,7 +114,10 @@ impl ImplRenderProcessHandler for RenderProcessHandlerBuilder {
         let Some(context) = context else {
             return;
         };
-        bind_cef_api(context);
+        let internal = frame
+            .as_deref()
+            .is_some_and(|frame| is_internal(&frame.url().into_string()));
+        bind_cef_api(context, internal);
         eval_extensions(context);
         if let (Some(browser), Some(frame)) = (browser, frame) {
             inject_initialize_scripts(browser, context, frame);
@@ -165,13 +168,20 @@ impl ImplRenderProcessHandler for RenderProcessHandlerBuilder {
     }
 }
 
-/// Defines `window.cef` in `context` with the `brp`, `emit` and `listen` functions.
+/// Whether `url` is one of the app's own pages, served under `cef://localhost/`.
+pub(crate) fn is_internal(url: &str) -> bool {
+    url.starts_with("cef://localhost/")
+}
+
+/// Defines `window.cef` in `context` with the `emit` and `listen` functions, and the `brp`
+/// function when the page is one of the app's own (`internal`): BRP reaches into the app's
+/// world, which no page from the web may.
 ///
 /// On failure, logs with `cef_error!` and leaves `window.cef` undefined.
 ///
 /// Must run while `context` is the entered V8 context, as inside
 /// `on_context_created`.
-fn bind_cef_api(context: &V8Context) {
+fn bind_cef_api(context: &V8Context, internal: bool) {
     let Some(global) = context.global() else {
         cef_error!("failed to bind window.cef: the context has no global object");
         return;
@@ -181,7 +191,12 @@ fn bind_cef_api(context: &V8Context) {
         return;
     };
     let mut handler = V8Handler::new(CefApiHandler::default());
-    for name in ["brp", "emit", "listen"] {
+    let names: &[&str] = if internal {
+        &["brp", "emit", "listen"]
+    } else {
+        &["emit", "listen"]
+    };
+    for &name in names {
         let key = CefString::from(name);
         let Some(mut function) = v8_value_create_function(Some(&key), Some(&mut handler)) else {
             cef_error!("failed to bind window.cef: could not create cef.{name}");
