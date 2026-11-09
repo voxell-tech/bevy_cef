@@ -15,8 +15,8 @@ pub mod prelude {
     pub use crate::browser_process::accelerated_paint::{RetainedIoSurface, WebviewGpuSurface};
     #[cfg(feature = "browser")]
     pub use crate::browser_process::display_handler::{
-        AddressChangedMessage, AddressChangedSenderInner, TitleChangedMessage,
-        TitleChangedSenderInner,
+        AddressChangedMessage, AddressChangedSenderInner, ConsoleLevel, ConsoleMessageMessage,
+        TitleChangedMessage, TitleChangedSenderInner, console_messages,
     };
     #[cfg(feature = "browser")]
     pub use crate::browser_process::drag_handler::DraggableRegionSenderInner;
