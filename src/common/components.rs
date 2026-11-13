@@ -170,6 +170,16 @@ where
 #[derive(Component, Debug, Clone)]
 pub(crate) struct WebviewSurface(pub(crate) Handle<Image>);
 
+/// The frame a `bevy_ui` webview's CPU `OnPaint` path paints, BGRA, for alpha
+/// hit-testing: that webview's image keeps no pixels in the main world, only its
+/// texture in the render world.
+#[derive(Component, Debug, Clone)]
+pub(crate) struct WebviewFrame {
+    pub(crate) frame: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+}
+
 /// [macOS GPU OSR] Per-webview holder of the latest retained IOSurface, used for
 /// on-demand transparent-pixel hit-testing.
 ///

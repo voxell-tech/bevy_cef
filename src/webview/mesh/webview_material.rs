@@ -58,37 +58,57 @@ pub struct WebviewMaterial {
 
 impl Material for WebviewMaterial {}
 
-/// Copies a CPU `OnPaint` frame into an `Image`, reallocating the image when the frame size
-/// differs from it. Returns `true` when the image was reallocated, which replaces its GPU
-/// texture and makes any material bound to the old texture stale.
+/// Copies a CPU `OnPaint` frame into an `Image`: only its dirty rectangle while
+/// the sizes agree, else the whole frame into a new image. Returns `true` when the
+/// image was reallocated, which replaces its GPU texture and makes any material
+/// bound to the old texture stale.
 #[cfg(not(target_os = "macos"))]
 pub(crate) fn update_webview_image(
     texture: &RenderTextureMessage,
     mut image: AssetMut<'_, Image>,
 ) -> bool {
-    let expected_len = (texture.width * texture.height * 4) as usize;
-    let dimensions_match = image.texture_descriptor.size.width == texture.width
-        && image.texture_descriptor.size.height == texture.height;
-    if let Some(data) = image.data.as_mut()
-        && dimensions_match
-        && data.len() == expected_len
+    if fits(texture, &image)
+        && let Some(data) = image.data.as_mut()
     {
-        data.copy_from_slice(&texture.buffer);
+        texture.copy_dirty(data);
         false
     } else {
-        *image = Image::new(
-            Extent3d {
-                width: texture.width,
-                height: texture.height,
-                depth_or_array_layers: 1,
-            },
-            TextureDimension::D2,
-            texture.buffer.clone(),
-            TextureFormat::Bgra8UnormSrgb,
-            RenderAssetUsages::all(),
-        );
+        *image = new_webview_image(texture, RenderAssetUsages::all());
         true
     }
+}
+
+/// Whether `image` is the size of `texture`'s frame, with pixels to update.
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn fits(texture: &RenderTextureMessage, image: &Image) -> bool {
+    image.texture_descriptor.size.width == texture.width
+        && image.texture_descriptor.size.height == texture.height
+        && image
+            .data
+            .as_ref()
+            .is_some_and(|data| data.len() == (texture.width * texture.height * 4) as usize)
+}
+
+/// An image holding the whole of `texture`'s frame, kept in the worlds `usage`
+/// names.
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn new_webview_image(texture: &RenderTextureMessage, usage: RenderAssetUsages) -> Image {
+    let pixels = texture
+        .frame
+        .lock()
+        .map(|frame| frame.clone())
+        .unwrap_or_default();
+    Image::new(
+        Extent3d {
+            width: texture.width,
+            height: texture.height,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        pixels,
+        TextureFormat::Bgra8UnormSrgb,
+        usage,
+    )
 }
 
 /// Anchors webview material preparation after `GpuImage` preparation: order it
@@ -108,12 +128,21 @@ mod tests {
     use super::*;
 
     fn paint(width: u32, height: u32) -> RenderTextureMessage {
+        painted(width, height, 0, URect::new(0, 0, width, height))
+    }
+
+    /// A frame filled with `value`, of which only `dirty` is new.
+    fn painted(width: u32, height: u32, value: u8, dirty: URect) -> RenderTextureMessage {
         RenderTextureMessage {
             webview: World::new().spawn_empty().id(),
             ty: RenderPaintElementType::View,
             width,
             height,
-            buffer: vec![0; (width * height * 4) as usize],
+            frame: std::sync::Arc::new(std::sync::Mutex::new(vec![
+                value;
+                (width * height * 4) as usize
+            ])),
+            dirty: vec![dirty],
         }
     }
 
@@ -141,5 +170,28 @@ mod tests {
         update_webview_image(&paint(4, 2), first);
         let second = images.get_mut(handle.id()).expect("image still exists");
         assert!(!update_webview_image(&paint(4, 2), second));
+    }
+
+    /// Asserts that a paint at an unchanged size copies only its dirty rectangle.
+    ///
+    /// Case: a caret blinks in an otherwise still page; the rest of the image keeps
+    /// what it had.
+    #[test]
+    fn same_size_paint_copies_only_dirty_rect() {
+        let mut images = Assets::<Image>::default();
+        let handle = images.add(Image::default());
+        let first = images.get_mut(handle.id()).expect("image was just added");
+        update_webview_image(&paint(4, 2), first);
+        let second = images.get_mut(handle.id()).expect("image still exists");
+        update_webview_image(&painted(4, 2, 9, URect::new(1, 1, 3, 2)), second);
+        let data = images.get(handle.id()).and_then(|image| image.data.clone());
+        let changed: Vec<usize> = data
+            .expect("image has pixels")
+            .chunks(4)
+            .enumerate()
+            .filter(|(_, pixel)| pixel[0] == 9)
+            .map(|(at, _)| at)
+            .collect();
+        assert_eq!(changed, [5, 6]);
     }
 }

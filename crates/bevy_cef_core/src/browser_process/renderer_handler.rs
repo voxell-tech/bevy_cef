@@ -18,8 +18,17 @@ use std::os::raw::c_int;
 #[cfg(not(target_os = "macos"))]
 pub type SharedTexture = std::rc::Rc<Cell<Option<RenderTextureMessage>>>;
 
+/// The pixels of a webview's view or popup, kept from one paint to the next: a
+/// paint writes only the rectangles CEF says it changed, so a caret blinking in a
+/// large page copies a few hundred bytes rather than the whole frame.
+///
+/// BGRA, `width` * `height` * 4 bytes, upper-left origin. Shared with the render
+/// world, which uploads the changed rectangles from it.
+#[cfg(not(target_os = "macos"))]
+pub type SharedFrame = std::sync::Arc<std::sync::Mutex<Vec<u8>>>;
+
 /// The texture structure passed from [`CefRenderHandler::OnPaint`](https://cef-builds.spotifycdn.com/docs/106.1/classCefRenderHandler.html#a6547d5c9dd472e6b84706dc81d3f1741).
-#[derive(Debug, Clone, PartialEq, Message)]
+#[derive(Debug, Clone, Message)]
 pub struct RenderTextureMessage {
     /// The entity of target rendering webview.
     pub webview: Entity,
@@ -29,8 +38,43 @@ pub struct RenderTextureMessage {
     pub width: u32,
     /// The height of the texture.
     pub height: u32,
-    /// This buffer will be `width` *`height` * 4 bytes in size and represents a BGRA image with an upper-left origin
-    pub buffer: Vec<u8>,
+    /// The whole frame, painted up to now.
+    pub frame: SharedFrame,
+    /// The rectangles of `frame` painted since the last message, in pixels: the
+    /// whole frame after a resize.
+    pub dirty: Vec<URect>,
+}
+
+/// The most rectangles a message keeps apart; more are joined into the one
+/// rectangle around them all.
+#[cfg(not(target_os = "macos"))]
+const DIRTY_MOST: usize = 16;
+
+#[cfg(not(target_os = "macos"))]
+impl RenderTextureMessage {
+    /// Copies the rectangles of `dirty` from `frame` into `into`, a buffer of
+    /// the same size.
+    pub fn copy_dirty(&self, into: &mut [u8]) {
+        let Ok(frame) = self.frame.lock() else {
+            return;
+        };
+        for rect in &self.dirty {
+            copy_rect(&frame, into, self.width, *rect);
+        }
+    }
+}
+
+/// Copies the rows of `rect` from `from` into `into`, two BGRA buffers `width`
+/// pixels wide.
+#[cfg(not(target_os = "macos"))]
+pub fn copy_rect(from: &[u8], into: &mut [u8], width: u32, rect: URect) {
+    let (width, x0, x1) = (width as usize, rect.min.x as usize, rect.max.x as usize);
+    for y in rect.min.y as usize..rect.max.y as usize {
+        let (start, end) = ((y * width + x0) * 4, (y * width + x1) * 4);
+        if end <= from.len() && end <= into.len() {
+            into[start..end].copy_from_slice(&from[start..end]);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -59,6 +103,10 @@ pub struct RenderHandlerBuilder {
     view_slot: SharedTexture,
     #[cfg(not(target_os = "macos"))]
     popup_slot: SharedTexture,
+    #[cfg(not(target_os = "macos"))]
+    view_frame: SharedFrame,
+    #[cfg(not(target_os = "macos"))]
+    popup_frame: SharedFrame,
     size: SharedViewSize,
     dpr: SharedDpr,
     /// Latest retained IOSurface for this webview's main view (Approach 2).
@@ -101,6 +149,8 @@ impl RenderHandlerBuilder {
             webview,
             view_slot,
             popup_slot,
+            view_frame: SharedFrame::default(),
+            popup_frame: SharedFrame::default(),
             size,
             dpr,
         })
@@ -136,6 +186,10 @@ impl Clone for RenderHandlerBuilder {
             view_slot: self.view_slot.clone(),
             #[cfg(not(target_os = "macos"))]
             popup_slot: self.popup_slot.clone(),
+            #[cfg(not(target_os = "macos"))]
+            view_frame: self.view_frame.clone(),
+            #[cfg(not(target_os = "macos"))]
+            popup_frame: self.popup_frame.clone(),
             size: self.size.clone(),
             dpr: self.dpr.clone(),
             #[cfg(target_os = "macos")]
@@ -183,7 +237,7 @@ impl ImplRenderHandler for RenderHandlerBuilder {
         &self,
         _browser: Option<&mut Browser>,
         type_: PaintElementType,
-        _dirty_rects: Option<&[cef::Rect]>,
+        dirty_rects: Option<&[cef::Rect]>,
         buffer: *const u8,
         width: c_int,
         height: c_int,
@@ -192,24 +246,72 @@ impl ImplRenderHandler for RenderHandlerBuilder {
             cef_paint_element_type_t::PET_POPUP => RenderPaintElementType::Popup,
             _ => RenderPaintElementType::View,
         };
-        let slot = match ty {
-            RenderPaintElementType::Popup => &self.popup_slot,
-            RenderPaintElementType::View => &self.view_slot,
+        let (slot, frame) = match ty {
+            RenderPaintElementType::Popup => (&self.popup_slot, &self.popup_frame),
+            RenderPaintElementType::View => (&self.view_slot, &self.view_frame),
         };
-        let pixels = unsafe { std::slice::from_raw_parts(buffer, (width * height * 4) as usize) };
-        // NOTE: Reuse the allocation of a frame the consumer has not drained yet. CEF can
-        // paint several times between two drains (on Windows it composites at its own rate);
-        // without this each of those paints allocates and frees a full-frame `Vec`. When the
-        // slot was already drained this is the same single allocation as before.
-        let mut pixel_buffer = slot.take().map(|stale| stale.buffer).unwrap_or_default();
-        pixel_buffer.clear();
-        pixel_buffer.extend_from_slice(pixels);
+        let (w, h) = (width.max(0) as u32, height.max(0) as u32);
+        let pixels = unsafe { std::slice::from_raw_parts(buffer, (w * h * 4) as usize) };
+        let whole = URect::new(0, 0, w, h);
+        let Ok(mut kept) = frame.lock() else {
+            return;
+        };
+        // NOTE: The frame is kept between paints, so a paint copies only what CEF
+        // says changed. A new size is the only time it is allocated, and then all
+        // of it is copied. Copying whole frames, tens of megabytes each, at the
+        // page's frame rate took most of the window's frame on Windows.
+        let resized = kept.len() != pixels.len();
+        let mut dirty = if resized {
+            kept.clear();
+            kept.extend_from_slice(pixels);
+            vec![whole]
+        } else {
+            let mut painted = Vec::new();
+            for rect in dirty_rects.unwrap_or_default() {
+                let rect = URect::new(
+                    rect.x.max(0) as u32,
+                    rect.y.max(0) as u32,
+                    (rect.x + rect.width).max(0) as u32,
+                    (rect.y + rect.height).max(0) as u32,
+                )
+                .intersect(whole);
+                if !rect.is_empty() {
+                    copy_rect(pixels, &mut kept, w, rect);
+                    painted.push(rect);
+                }
+            }
+            if dirty_rects.is_none() {
+                kept.copy_from_slice(pixels);
+                painted = vec![whole];
+            }
+            painted
+        };
+        drop(kept);
+        // CEF can paint more than once before the window takes the frame; the
+        // parts painted since then add up.
+        if let Some(stale) = slot.take()
+            && !resized
+            && stale.width == w
+            && stale.height == h
+        {
+            dirty.extend(stale.dirty);
+        }
+        if dirty.len() > DIRTY_MOST {
+            let around = dirty
+                .iter()
+                .fold(URect::EMPTY, |all, rect| all.union(*rect));
+            dirty = vec![around];
+        }
+        if dirty.is_empty() {
+            return;
+        }
         slot.set(Some(RenderTextureMessage {
             webview: self.webview,
             ty,
-            width: width as u32,
-            height: height as u32,
-            buffer: pixel_buffer,
+            width: w,
+            height: h,
+            frame: frame.clone(),
+            dirty,
         }));
     }
 
