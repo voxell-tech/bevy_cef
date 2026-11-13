@@ -91,9 +91,9 @@ pub(crate) struct CefShutDown;
 ///
 /// Every platform runs CEF in `external_message_pump` mode: CEF asks for work through
 /// `on_schedule_message_pump_work`, and [`CefDoMessageLoopWork`](https://cef-builds.spotifycdn.com/docs/106.1/cef__app_8h.html#a830ae43dcdffcf4e719540204cefdb61)
-/// runs from a system in the `Main` schedule (throttled to a 4 ms minimum interval, with a
-/// 30 Hz max-delay fallback). The CEF UI thread is therefore the Bevy main thread, which is
-/// why `Browsers` is a `NonSend` resource.
+/// runs from a system in the `Main` schedule: each frame while a browser is open, else when
+/// CEF asks or at a 30 Hz fallback, never more often than every 4 ms. The CEF UI thread is
+/// therefore the Bevy main thread, which is why `Browsers` is a `NonSend` resource.
 ///
 /// `multi_threaded_message_loop` is not used: CEF does not support it on macOS, and
 /// `cef_do_message_loop_work` does not block.
@@ -388,6 +388,7 @@ fn cef_initialize(
 
 fn cef_do_message_loop_work(
     receiver: NonSend<MessageLoopWorkingReceiver>,
+    browsers: Option<NonSend<Browsers>>,
     mut timer: Local<Option<MessageLoopTimer>>,
     mut max_delay_timer: Local<MessageLoopWorkingMaxDelayTimer>,
     mut last_execution: Local<Option<std::time::Instant>>,
@@ -395,8 +396,15 @@ fn cef_do_message_loop_work(
     while let Ok(t) = receiver.try_recv() {
         timer.replace(t);
     }
-    let should_execute =
-        timer.as_ref().map(|t| t.is_finished()).unwrap_or(false) || max_delay_timer.is_finished();
+    // NOTE: CEF asks for the pump through `on_schedule_message_pump_work`, but on
+    // Windows it was measured asking far less often than it paints: a page
+    // animating at 60 fps reached the window at about 19 fps, the rate of the
+    // fallback timer. While a browser is open the pump runs each frame instead,
+    // still no more often than `MIN_PUMP_INTERVAL`.
+    let browsing = browsers.is_some_and(|browsers| browsers.live_browser_count() > 0);
+    let should_execute = browsing
+        || timer.as_ref().map(|t| t.is_finished()).unwrap_or(false)
+        || max_delay_timer.is_finished();
     if should_execute {
         // Enforce a minimum interval between executions to prevent
         // delay_ms=0 requests from causing excessive pump calls.
