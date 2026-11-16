@@ -36,7 +36,10 @@ impl Plugin for UiWebviewPlugin {
             UiMaterialPlugin::<WebviewUiMaterial>::default(),
             WebviewUiInputPlugin,
         ))
-        .add_systems(PostUpdate, update_webview_ui_size.after(UiSystems::Layout));
+        .add_systems(
+            PostUpdate,
+            (update_webview_ui_size, update_webview_ui_scale).after(UiSystems::Layout),
+        );
 
         // CPU `OnPaint` consumer: Linux/Windows only. On macOS the GPU path
         // (`gpu_surface::allocate_ui_webview_surfaces` + injection) handles UI
@@ -156,9 +159,56 @@ fn update_webview_ui_size(
     }
 }
 
+/// Keeps each UI webview material's [`WebviewUiMaterial::scale`] in step with
+/// its node's scale factor and its `WebviewDpr`. A resize alone leaves it as it
+/// is, so the material is not touched while a node is dragged to a new size.
+fn update_webview_ui_scale(
+    webviews: Query<
+        (&ComputedNode, &WebviewDpr, &MaterialNode<WebviewUiMaterial>),
+        Or<(
+            Changed<ComputedNode>,
+            Changed<WebviewDpr>,
+            Changed<MaterialNode<WebviewUiMaterial>>,
+        )>,
+    >,
+    mut materials: ResMut<Assets<WebviewUiMaterial>>,
+) {
+    for (computed, dpr, handle) in webviews.iter() {
+        let Some(scale) = surface_scale(computed.inverse_scale_factor(), dpr.0) else {
+            continue;
+        };
+        if materials
+            .get(handle.id())
+            .is_some_and(|material| material.scale != scale)
+            && let Some(mut material) = materials.get_mut(handle.id())
+        {
+            material.scale = scale;
+        }
+    }
+}
+
+/// A node's pixels per texel of a surface CEF paints at `dpr`, and per logical
+/// pixel, for a node whose `ComputedNode` has `inverse_scale_factor`.
+fn surface_scale(inverse_scale_factor: f32, dpr: f32) -> Option<Vec2> {
+    if inverse_scale_factor <= 0.0 || dpr <= 0.0 {
+        return None;
+    }
+    let per_logical = inverse_scale_factor.recip();
+    Some(Vec2::new(per_logical / dpr, per_logical))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_surface_drawn_at_a_zoom_finds_its_node_pixels() {
+        // A 2x window with the UI at 0.8: a logical pixel is 1.6 node pixels,
+        // and a texel of a 2x surface 0.8.
+        let scale = surface_scale(1.0 / 1.6, 2.0).unwrap();
+        assert!((scale - Vec2::new(0.8, 1.6)).abs().max_element() < 1e-6);
+        assert_eq!(surface_scale(0.0, 2.0), None);
+    }
 
     #[test]
     fn converts_physical_to_logical() {
