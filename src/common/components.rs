@@ -146,6 +146,12 @@ pub struct AudioMuted(pub bool);
 #[reflect(Component, Debug, Default, Serialize, Deserialize)]
 pub struct WebviewHidden(pub bool);
 
+/// Lets the page of the webview read the clipboard (`navigator.clipboard.read()`), as a page the
+/// app trusts, such as an editor of its own, needs. A windowless browser shows no permission
+/// prompt; without this the page is denied.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct WebviewClipboard;
+
 /// This component is used to preload scripts in the webview.
 ///
 /// Scripts specified in this component are executed before the scripts in the HTML.

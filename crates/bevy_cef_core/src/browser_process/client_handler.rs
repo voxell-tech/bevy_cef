@@ -6,8 +6,8 @@ use crate::prelude::IntoString;
 use cef::rc::{Rc, RcImpl};
 use cef::{
     Browser, Client, ContextMenuHandler, DisplayHandler, DragHandler, Frame, ImplClient,
-    ImplProcessMessage, LifeSpanHandler, ListValue, LoadHandler, ProcessId, ProcessMessage,
-    RenderHandler, WrapClient, sys,
+    ImplProcessMessage, LifeSpanHandler, ListValue, LoadHandler, PermissionHandler, ProcessId,
+    ProcessMessage, RenderHandler, WrapClient, sys,
 };
 use std::os::raw::c_int;
 
@@ -32,6 +32,7 @@ pub struct ClientHandlerBuilder {
     drag_handler: Option<DragHandler>,
     load_handler: Option<LoadHandler>,
     life_span_handler: Option<LifeSpanHandler>,
+    permission_handler: Option<PermissionHandler>,
 }
 
 impl ClientHandlerBuilder {
@@ -45,6 +46,7 @@ impl ClientHandlerBuilder {
             drag_handler: None,
             load_handler: None,
             life_span_handler: None,
+            permission_handler: None,
         }
     }
 
@@ -65,6 +67,11 @@ impl ClientHandlerBuilder {
 
     pub fn with_life_span_handler(mut self, life_span_handler: LifeSpanHandler) -> Self {
         self.life_span_handler = Some(life_span_handler);
+        self
+    }
+
+    pub fn with_permission_handler(mut self, permission_handler: PermissionHandler) -> Self {
+        self.permission_handler = Some(permission_handler);
         self
     }
 
@@ -110,6 +117,7 @@ impl Clone for ClientHandlerBuilder {
             drag_handler: self.drag_handler.clone(),
             load_handler: self.load_handler.clone(),
             life_span_handler: self.life_span_handler.clone(),
+            permission_handler: self.permission_handler.clone(),
         }
     }
 }
@@ -133,6 +141,10 @@ impl ImplClient for ClientHandlerBuilder {
 
     fn life_span_handler(&self) -> Option<LifeSpanHandler> {
         self.life_span_handler.clone()
+    }
+
+    fn permission_handler(&self) -> Option<PermissionHandler> {
+        self.permission_handler.clone()
     }
 
     fn on_process_message_received(

@@ -117,7 +117,24 @@ pub struct RenderHandlerBuilder {
     /// `RenderDevice`/`RenderQueue` is needed in the callback path.
     #[cfg(target_os = "macos")]
     latest_iosurface: crate::browser_process::accelerated_paint::SharedRetainedIoSurface,
+    drags: SharedDrags,
 }
+
+/// A drag the page began, which the browser runs within the page: the pointer's moves and its
+/// release are handed to the page as the drag's (see `Browsers::send_mouse_move`).
+pub struct DragSession {
+    pub data: DragData,
+    /// What the page allows the drag to do.
+    pub allowed: DragOperationsMask,
+    /// What the page under the pointer would do with it, as it last said.
+    pub operation: DragOperationsMask,
+    /// Whether the page was told the drag entered it.
+    pub entered: bool,
+}
+
+/// The drag each webview's page is running.
+pub type SharedDrags =
+    std::rc::Rc<std::cell::RefCell<bevy::platform::collections::HashMap<Entity, DragSession>>>;
 
 impl RenderHandlerBuilder {
     #[cfg(target_os = "macos")]
@@ -126,6 +143,7 @@ impl RenderHandlerBuilder {
         size: SharedViewSize,
         dpr: SharedDpr,
         latest_iosurface: crate::browser_process::accelerated_paint::SharedRetainedIoSurface,
+        drags: SharedDrags,
     ) -> RenderHandler {
         RenderHandler::new(Self {
             object: std::ptr::null_mut(),
@@ -133,6 +151,7 @@ impl RenderHandlerBuilder {
             size,
             dpr,
             latest_iosurface,
+            drags,
         })
     }
 
@@ -143,6 +162,7 @@ impl RenderHandlerBuilder {
         popup_slot: SharedTexture,
         size: SharedViewSize,
         dpr: SharedDpr,
+        drags: SharedDrags,
     ) -> RenderHandler {
         RenderHandler::new(Self {
             object: std::ptr::null_mut(),
@@ -153,6 +173,7 @@ impl RenderHandlerBuilder {
             popup_frame: SharedFrame::default(),
             size,
             dpr,
+            drags,
         })
     }
 }
@@ -194,11 +215,43 @@ impl Clone for RenderHandlerBuilder {
             dpr: self.dpr.clone(),
             #[cfg(target_os = "macos")]
             latest_iosurface: self.latest_iosurface.clone(),
+            drags: self.drags.clone(),
         }
     }
 }
 
 impl ImplRenderHandler for RenderHandlerBuilder {
+    /// Runs a drag the page began within the page, rather than the system's drag and drop,
+    /// which a windowless browser has none of.
+    fn start_dragging(
+        &self,
+        _browser: Option<&mut Browser>,
+        drag_data: Option<&mut DragData>,
+        allowed_ops: DragOperationsMask,
+        _x: c_int,
+        _y: c_int,
+    ) -> c_int {
+        let Some(data) = drag_data else {
+            return 0;
+        };
+        self.drags.borrow_mut().insert(
+            self.webview,
+            DragSession {
+                data: Clone::clone(&*data),
+                allowed: allowed_ops,
+                operation: allowed_ops,
+                entered: false,
+            },
+        );
+        1
+    }
+
+    fn update_drag_cursor(&self, _browser: Option<&mut Browser>, operation: DragOperationsMask) {
+        if let Some(session) = self.drags.borrow_mut().get_mut(&self.webview) {
+            session.operation = operation;
+        }
+    }
+
     fn view_rect(&self, _browser: Option<&mut Browser>, rect: Option<&mut cef::Rect>) {
         if let Some(rect) = rect {
             let size = self.size.get();
