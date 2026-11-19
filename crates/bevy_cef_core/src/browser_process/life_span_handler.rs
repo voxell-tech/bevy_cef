@@ -29,7 +29,7 @@ pub struct PopupRequest {
 pub type SharedPopups = std::rc::Rc<RefCell<Vec<PopupRequest>>>;
 
 /// Whether a page asking for a new page with `disposition` wants it shown at once.
-fn in_front(disposition: WindowOpenDisposition) -> bool {
+pub(crate) fn in_front(disposition: WindowOpenDisposition) -> bool {
     disposition != WindowOpenDisposition::NEW_BACKGROUND_TAB
 }
 

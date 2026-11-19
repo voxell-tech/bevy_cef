@@ -19,6 +19,7 @@ mod permission_handler;
 mod profiles;
 mod renderer_handler;
 mod request_context_handler;
+mod request_handler;
 
 pub use app::*;
 pub use browser_process_handler::*;
@@ -38,3 +39,4 @@ pub use message_pump::*;
 pub use permission_handler::*;
 pub use renderer_handler::*;
 pub use request_context_handler::*;
+pub use request_handler::*;

@@ -7,7 +7,7 @@ use cef::rc::{Rc, RcImpl};
 use cef::{
     Browser, Client, ContextMenuHandler, DisplayHandler, DragHandler, Frame, ImplClient,
     ImplProcessMessage, LifeSpanHandler, ListValue, LoadHandler, PermissionHandler, ProcessId,
-    ProcessMessage, RenderHandler, WrapClient, sys,
+    ProcessMessage, RenderHandler, RequestHandler, WrapClient, sys,
 };
 use std::os::raw::c_int;
 
@@ -33,6 +33,7 @@ pub struct ClientHandlerBuilder {
     load_handler: Option<LoadHandler>,
     life_span_handler: Option<LifeSpanHandler>,
     permission_handler: Option<PermissionHandler>,
+    request_handler: Option<RequestHandler>,
 }
 
 impl ClientHandlerBuilder {
@@ -47,6 +48,7 @@ impl ClientHandlerBuilder {
             load_handler: None,
             life_span_handler: None,
             permission_handler: None,
+            request_handler: None,
         }
     }
 
@@ -72,6 +74,11 @@ impl ClientHandlerBuilder {
 
     pub fn with_permission_handler(mut self, permission_handler: PermissionHandler) -> Self {
         self.permission_handler = Some(permission_handler);
+        self
+    }
+
+    pub fn with_request_handler(mut self, request_handler: RequestHandler) -> Self {
+        self.request_handler = Some(request_handler);
         self
     }
 
@@ -118,6 +125,7 @@ impl Clone for ClientHandlerBuilder {
             load_handler: self.load_handler.clone(),
             life_span_handler: self.life_span_handler.clone(),
             permission_handler: self.permission_handler.clone(),
+            request_handler: self.request_handler.clone(),
         }
     }
 }
@@ -145,6 +153,10 @@ impl ImplClient for ClientHandlerBuilder {
 
     fn permission_handler(&self) -> Option<PermissionHandler> {
         self.permission_handler.clone()
+    }
+
+    fn request_handler(&self) -> Option<RequestHandler> {
+        self.request_handler.clone()
     }
 
     fn on_process_message_received(

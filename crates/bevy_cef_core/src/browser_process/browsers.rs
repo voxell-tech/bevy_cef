@@ -952,6 +952,7 @@ impl Browsers {
                 webview,
                 self.popups.clone(),
             ))
+            .with_request_handler(RequestHandlerBuilder::build(webview, self.popups.clone()))
             .with_permission_handler(PermissionHandlerBuilder::build(
                 webview,
                 self.clipboard.clone(),
