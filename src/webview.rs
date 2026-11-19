@@ -1,7 +1,7 @@
 use crate::common::localhost::responser::{InlineHtmlId, InlineHtmlStore};
 use crate::common::{
-    CefShutDown, HostWindow, IpcEventRawSender, ResolvedWebviewUri, WebviewDpr, WebviewSize,
-    WebviewSource, ZoomLevel,
+    CefShutDown, HostWindow, IpcEventRawSender, ResolvedWebviewUri, WebviewClipboard, WebviewDpr,
+    WebviewSize, WebviewSource, ZoomLevel,
 };
 use crate::cursor_icon::SystemCursorIconSender;
 use crate::drag::DraggableRegionSender;
@@ -146,6 +146,8 @@ impl Plugin for WebviewPlugin {
 
         app.init_non_send::<Browsers>()
             .init_resource::<BeginFrameInterval>()
+            .add_observer(allow_clipboard)
+            .add_observer(deny_clipboard)
             .add_plugins((MeshWebviewPlugin, UiWebviewPlugin))
             .add_systems(
                 Update,
@@ -308,6 +310,16 @@ fn send_external_begin_frame(
     if timer.just_finished() {
         browsers.send_external_begin_frame();
     }
+}
+
+/// Lets a webview's page read the clipboard once it has a [`WebviewClipboard`].
+fn allow_clipboard(added: On<Add<WebviewClipboard>>, browsers: NonSend<Browsers>) {
+    browsers.allow_clipboard(added.entity, true);
+}
+
+/// Stops a webview's page reading the clipboard when its [`WebviewClipboard`] goes.
+fn deny_clipboard(removed: On<Remove<WebviewClipboard>>, browsers: NonSend<Browsers>) {
+    browsers.allow_clipboard(removed.entity, false);
 }
 
 /// Creates the browser of each newly resolved webview without a [`WebviewProfile`], on its own

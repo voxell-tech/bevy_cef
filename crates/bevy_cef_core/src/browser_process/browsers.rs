@@ -84,6 +84,15 @@ pub enum EditCommand {
 pub struct Browsers {
     browsers: HashMap<Entity, WebviewBrowser>,
     live_browsers: SharedLiveBrowsers,
+    /// The drag each webview's page is running.
+    drags: SharedDrags,
+    /// The webviews whose pages may read the clipboard.
+    clipboard: SharedClipboard,
+    /// The new pages webviews' pages asked for, waiting for the app.
+    popups: SharedPopups,
+    /// The modifier keys held, as CEF's event flags, which every mouse event carries: a
+    /// page reads Ctrl+click or Shift+click from them.
+    held_keys: Cell<u32>,
     /// One shared request context per profile, keyed by the profile's cache path.
     profiles: HashMap<String, ProfileContext>,
 }
@@ -186,7 +195,9 @@ impl Browsers {
             )),
             Some(&uri.into()),
             Some(&BrowserSettings {
-                windowless_frame_rate: 60,
+                // Where begin frames are sent by the app, they set the rate, and this is only a
+                // ceiling, high enough for displays faster than 60 Hz.
+                windowless_frame_rate: if EXTERNAL_BEGIN_FRAME { 240 } else { 60 },
                 ..Default::default()
             }),
             Self::create_extra_info(initialize_scripts).as_mut(),
@@ -341,12 +352,89 @@ impl Browsers {
             let mouse_event = cef::MouseEvent {
                 x: position.x as i32,
                 y: position.y as i32,
-                modifiers: modifiers_from_mouse_buttons(buttons),
+                modifiers: modifiers_from_mouse_buttons(buttons) | self.held_keys.get(),
             };
+            // While the page drags, the pointer carries what it drags.
+            if let Some(session) = self.drags.borrow_mut().get_mut(webview) {
+                if !session.entered {
+                    session.entered = true;
+                    let mut data = Clone::clone(&session.data);
+                    browser.host.drag_target_drag_enter(
+                        Some(&mut data),
+                        Some(&mouse_event),
+                        session.allowed,
+                    );
+                }
+                if mouse_leave {
+                    browser.host.drag_target_drag_leave();
+                    session.entered = false;
+                } else {
+                    browser
+                        .host
+                        .drag_target_drag_over(Some(&mouse_event), session.allowed);
+                }
+                return;
+            }
             browser
                 .host
                 .send_mouse_move_event(Some(&mouse_event), mouse_leave as _);
         }
+    }
+
+    /// Whether the page of `webview` is dragging something.
+    pub fn is_page_dragging(&self, webview: &Entity) -> bool {
+        self.drags.borrow().contains_key(webview)
+    }
+
+    /// Sets the modifier keys held, as [`keyboard_modifiers`] gives them, for the mouse
+    /// events sent from now on.
+    pub fn set_held_keys(&self, flags: u32) {
+        self.held_keys.set(flags);
+    }
+
+    /// Takes the new pages webviews' pages asked for since the last call, oldest first.
+    pub fn take_popups(&self) -> Vec<PopupRequest> {
+        std::mem::take(&mut *self.popups.borrow_mut())
+    }
+
+    /// Lets the page of `webview` read the clipboard, or stops it.
+    pub fn allow_clipboard(&self, webview: Entity, allow: bool) {
+        let mut clipboard = self.clipboard.borrow_mut();
+        if allow {
+            clipboard.insert(webview);
+        } else {
+            clipboard.remove(&webview);
+        }
+    }
+
+    /// Drops what the page of `webview` drags at `position`, and ends the drag.
+    fn drop_dragged(&self, browser: &WebviewBrowser, webview: &Entity, position: Vec2) -> bool {
+        let Some(mut session) = self.drags.borrow_mut().remove(webview) else {
+            return false;
+        };
+        let mouse_event = cef::MouseEvent {
+            x: position.x as i32,
+            y: position.y as i32,
+            modifiers: self.held_keys.get(),
+        };
+        if !session.entered {
+            browser.host.drag_target_drag_enter(
+                Some(&mut session.data),
+                Some(&mouse_event),
+                session.allowed,
+            );
+        }
+        // The page decides where a drop goes as the drag passes over it; it is told the
+        // drag is where it is let go, whichever moves it was told last.
+        browser
+            .host
+            .drag_target_drag_over(Some(&mouse_event), session.allowed);
+        browser.host.drag_target_drop(Some(&mouse_event));
+        browser
+            .host
+            .drag_source_ended_at(mouse_event.x, mouse_event.y, session.operation);
+        browser.host.drag_source_system_drag_ended();
+        true
     }
 
     /// Tells CEF the pointer left the webview, clearing its hover state.
@@ -367,11 +455,12 @@ impl Browsers {
             let mouse_event = cef::MouseEvent {
                 x: position.x as i32,
                 y: position.y as i32,
-                modifiers: match button {
+                modifiers: (match button {
                     PointerButton::Primary => cef_event_flags_t::EVENTFLAG_LEFT_MOUSE_BUTTON.0,
                     PointerButton::Secondary => cef_event_flags_t::EVENTFLAG_RIGHT_MOUSE_BUTTON.0,
                     PointerButton::Middle => cef_event_flags_t::EVENTFLAG_MIDDLE_MOUSE_BUTTON.0,
-                } as _, // No modifiers for simplicity
+                } as u32)
+                    | self.held_keys.get(),
             };
             let mouse_button = match button {
                 PointerButton::Secondary => cef_mouse_button_type_t::MBT_RIGHT,
@@ -379,6 +468,12 @@ impl Browsers {
                 _ => cef_mouse_button_type_t::MBT_LEFT,
             };
             browser.host.set_focus(true as _);
+            if mouse_up
+                && button == PointerButton::Primary
+                && self.drop_dragged(browser, webview, position)
+            {
+                return;
+            }
             browser.host.send_mouse_click_event(
                 Some(&mouse_event),
                 MouseButtonType::from(mouse_button),
@@ -394,7 +489,7 @@ impl Browsers {
             let mouse_event = cef::MouseEvent {
                 x: position.x as i32,
                 y: position.y as i32,
-                modifiers: 0,
+                modifiers: self.held_keys.get(),
             };
             browser
                 .host
@@ -493,6 +588,8 @@ impl Browsers {
     ///
     /// The browser will be removed from the hash map after closing.
     pub fn close(&mut self, webview: &Entity) {
+        self.drags.borrow_mut().remove(webview);
+        self.clipboard.borrow_mut().remove(webview);
         if let Some(browser) = self.browsers.remove(webview) {
             browser.host.close_browser(true as _);
             debug!("Closed browser with webview: {:?}", webview);
@@ -680,6 +777,17 @@ impl Browsers {
         }
     }
 
+    /// Tells the specified webview whether it is out of sight.
+    ///
+    /// ## Reference
+    ///
+    /// - [`CefBrowserHost::WasHidden`](https://cef-builds.spotifycdn.com/docs/122.0/classCefBrowserHost.html)
+    pub fn set_hidden(&self, webview: &Entity, hidden: bool) {
+        if let Some(browser) = self.browsers.get(webview) {
+            browser.host.was_hidden(hidden as _);
+        }
+    }
+
     /// Returns whether the audio of the specified webview is muted.
     ///
     /// Returns `None` when the webview has no browser.
@@ -809,11 +917,22 @@ impl Browsers {
         cookie_flusher: Option<CookieFlusher>,
     ) -> Client {
         #[cfg(target_os = "macos")]
-        let render_handler =
-            RenderHandlerBuilder::build(webview, size.clone(), dpr, latest_iosurface);
+        let render_handler = RenderHandlerBuilder::build(
+            webview,
+            size.clone(),
+            dpr,
+            latest_iosurface,
+            self.drags.clone(),
+        );
         #[cfg(not(target_os = "macos"))]
-        let render_handler =
-            RenderHandlerBuilder::build(webview, view_slot, popup_slot, size.clone(), dpr);
+        let render_handler = RenderHandlerBuilder::build(
+            webview,
+            view_slot,
+            popup_slot,
+            size.clone(),
+            dpr,
+            self.drags.clone(),
+        );
         ClientHandlerBuilder::new(render_handler)
             .with_display_handler(DisplayHandlerBuilder::build(
                 webview,
@@ -828,7 +947,16 @@ impl Browsers {
                 initial_zoom,
                 cookie_flusher,
             ))
-            .with_life_span_handler(LifeSpanHandlerBuilder::build(self.live_browsers.clone()))
+            .with_life_span_handler(LifeSpanHandlerBuilder::build_for(
+                self.live_browsers.clone(),
+                webview,
+                self.popups.clone(),
+            ))
+            .with_request_handler(RequestHandlerBuilder::build(webview, self.popups.clone()))
+            .with_permission_handler(PermissionHandlerBuilder::build(
+                webview,
+                self.clipboard.clone(),
+            ))
             .with_message_handler(JsEmitEventHandler::new(webview, ipc_event_sender))
             .with_message_handler(BrpHandler::new(brp_sender))
             .build()

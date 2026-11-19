@@ -28,12 +28,39 @@ impl Plugin for NavigationPlugin {
             .register_type::<LoadFinished>()
             .register_type::<LoadError>()
             .register_type::<AddressChanged>()
-            .add_systems(PreUpdate, (drain_load_events, drain_address_changed));
+            .register_type::<PopupRequested>()
+            .add_systems(
+                PreUpdate,
+                (drain_load_events, drain_address_changed, drain_popups),
+            );
 
         app.add_observer(apply_request_go_back)
             .add_observer(apply_request_go_forward)
             .add_observer(apply_request_navigate)
             .add_observer(apply_request_reload);
+    }
+}
+
+/// A webview's page asked to open `url` in a new window or tab: a link with
+/// `target="_blank"`, one opened with a modifier, or `window.open`. No window is opened for
+/// it; the app decides where the page goes, if anywhere.
+#[derive(Debug, EntityEvent, Clone, Reflect, Serialize, Deserialize)]
+pub struct PopupRequested {
+    /// The webview whose page asked.
+    #[event_target]
+    pub webview: Entity,
+    pub url: String,
+    /// Whether the new page should be shown at once, rather than opened behind.
+    pub foreground: bool,
+}
+
+fn drain_popups(mut commands: Commands, browsers: NonSend<Browsers>) {
+    for popup in browsers.take_popups() {
+        commands.trigger(PopupRequested {
+            webview: popup.webview,
+            url: popup.url,
+            foreground: popup.foreground,
+        });
     }
 }
 

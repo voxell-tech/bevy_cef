@@ -4,7 +4,7 @@
 
 #[cfg(target_os = "macos")]
 use crate::common::WebviewIoSurface;
-use crate::prelude::{WebviewSize, WebviewSource, WebviewSurface};
+use crate::prelude::{WebviewFrame, WebviewSize, WebviewSource, WebviewSurface};
 use crate::webview::alpha::is_pixel_transparent;
 #[cfg(target_os = "macos")]
 use crate::webview::alpha::is_pixel_transparent_surface;
@@ -60,14 +60,27 @@ type UiNode<'a> = (
     &'a ComputedNode,
     Option<&'a WebviewSurface>,
     &'a WebviewSize,
+    Option<&'a WebviewFrame>,
 );
 
 /// Resolves the DIP pointer position for a UI webview node, returning `None`
 /// when the position is unknown or lands on a transparent pixel (pass-through).
 fn ui_pointer_pos(node: UiNode, images: &Assets<Image>) -> Option<Vec2> {
-    let (rel, computed, surface, size) = node;
+    let (rel, computed, surface, size, frame) = node;
     let normalized = rel.normalized?;
     let pos = ui_pos_to_dip(normalized, computed.size(), computed.inverse_scale_factor());
+    // The CPU `OnPaint` path keeps the pixels in the frame, not the image.
+    if let Some(frame) = frame {
+        let transparent = frame.frame.lock().is_ok_and(|pixels| {
+            crate::webview::alpha::is_frame_pixel_transparent(
+                &pixels,
+                UVec2::new(frame.width, frame.height),
+                size.0,
+                pos,
+            )
+        });
+        return (!transparent).then_some(pos);
+    }
     if let Some(surface) = surface
         && let Some(image) = images.get(surface.0.id())
         && is_pixel_transparent(image, size.0, pos)
@@ -89,7 +102,7 @@ fn ui_pointer_pos_macos(
     images: &Assets<Image>,
     webview_iosurface: Option<&WebviewIoSurface>,
 ) -> Option<Vec2> {
-    let (rel, computed, _surface, size) = node;
+    let (rel, computed, _surface, size, _frame) = node;
     let normalized = rel.normalized?;
     let pos = ui_pos_to_dip(normalized, computed.size(), computed.inverse_scale_factor());
 

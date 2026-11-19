@@ -123,6 +123,23 @@ pub fn create_cef_key_events(modifiers: u32, key_event: &KeyboardInput) -> Vec<c
         ..base
     };
 
+    // Enter types a line break as a CHAR of '\r' after its key-down, as the
+    // native WM_KEYDOWN → WM_CHAR does; a text field inserts the break on the
+    // CHAR, so without it Enter did nothing in one. macOS carries it on the
+    // key-down above.
+    if key_event.key_code == KeyCode::Enter && !cfg!(target_os = "macos") {
+        return vec![
+            cef::KeyEvent::from(raw_key_down),
+            cef::KeyEvent::from(cef_key_event_t {
+                type_: cef_key_event_type_t::KEYEVENT_CHAR,
+                windows_key_code: '\r' as i32,
+                character: '\r' as u16,
+                unmodified_character: '\r' as u16,
+                ..base
+            }),
+        ];
+    }
+
     if is_not_character_key_code(&key_event.key_code) || character == 0 {
         return vec![cef::KeyEvent::from(raw_key_down)];
     }
@@ -859,4 +876,61 @@ fn to_windows_native_key_code(keycode: &KeyCode) -> u32 {
     };
     let extended_prefix = if extended { 0xe000u32 } else { 0 };
     scan_code | extended_prefix
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::prelude::Entity;
+
+    fn pressed(key_code: KeyCode, logical_key: Key, text: Option<&str>) -> KeyboardInput {
+        KeyboardInput {
+            key_code,
+            logical_key,
+            state: ButtonState::Pressed,
+            text: text.map(Into::into),
+            repeat: false,
+            window: Entity::PLACEHOLDER,
+        }
+    }
+
+    fn kinds(events: &[cef::KeyEvent]) -> Vec<(cef_key_event_type_t, u16)> {
+        events
+            .iter()
+            .map(|event| {
+                let raw = cef_key_event_t::from(event.clone());
+                (raw.type_, raw.character)
+            })
+            .collect()
+    }
+
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn enter_types_a_line_break() {
+        let events = create_cef_key_events(0, &pressed(KeyCode::Enter, Key::Enter, Some("\r")));
+        assert_eq!(
+            kinds(&events),
+            [
+                (cef_key_event_type_t::KEYEVENT_RAWKEYDOWN, 0),
+                (cef_key_event_type_t::KEYEVENT_CHAR, '\r' as u16),
+            ]
+        );
+    }
+
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn other_editing_keys_send_only_their_key_down() {
+        for (code, key) in [
+            (KeyCode::Tab, Key::Tab),
+            (KeyCode::Backspace, Key::Backspace),
+            (KeyCode::Delete, Key::Delete),
+            (KeyCode::Escape, Key::Escape),
+        ] {
+            let events = create_cef_key_events(0, &pressed(code, key, None));
+            assert_eq!(
+                kinds(&events),
+                [(cef_key_event_type_t::KEYEVENT_RAWKEYDOWN, 0)]
+            );
+        }
+    }
 }
