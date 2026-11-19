@@ -88,6 +88,11 @@ pub struct Browsers {
     drags: SharedDrags,
     /// The webviews whose pages may read the clipboard.
     clipboard: SharedClipboard,
+    /// The new pages webviews' pages asked for, waiting for the app.
+    popups: SharedPopups,
+    /// The modifier keys held, as CEF's event flags, which every mouse event carries: a
+    /// page reads Ctrl+click or Shift+click from them.
+    held_keys: Cell<u32>,
     /// One shared request context per profile, keyed by the profile's cache path.
     profiles: HashMap<String, ProfileContext>,
 }
@@ -347,7 +352,7 @@ impl Browsers {
             let mouse_event = cef::MouseEvent {
                 x: position.x as i32,
                 y: position.y as i32,
-                modifiers: modifiers_from_mouse_buttons(buttons),
+                modifiers: modifiers_from_mouse_buttons(buttons) | self.held_keys.get(),
             };
             // While the page drags, the pointer carries what it drags.
             if let Some(session) = self.drags.borrow_mut().get_mut(webview) {
@@ -381,6 +386,17 @@ impl Browsers {
         self.drags.borrow().contains_key(webview)
     }
 
+    /// Sets the modifier keys held, as [`keyboard_modifiers`] gives them, for the mouse
+    /// events sent from now on.
+    pub fn set_held_keys(&self, flags: u32) {
+        self.held_keys.set(flags);
+    }
+
+    /// Takes the new pages webviews' pages asked for since the last call, oldest first.
+    pub fn take_popups(&self) -> Vec<PopupRequest> {
+        std::mem::take(&mut *self.popups.borrow_mut())
+    }
+
     /// Lets the page of `webview` read the clipboard, or stops it.
     pub fn allow_clipboard(&self, webview: Entity, allow: bool) {
         let mut clipboard = self.clipboard.borrow_mut();
@@ -399,7 +415,7 @@ impl Browsers {
         let mouse_event = cef::MouseEvent {
             x: position.x as i32,
             y: position.y as i32,
-            modifiers: 0,
+            modifiers: self.held_keys.get(),
         };
         if !session.entered {
             browser.host.drag_target_drag_enter(
@@ -439,11 +455,12 @@ impl Browsers {
             let mouse_event = cef::MouseEvent {
                 x: position.x as i32,
                 y: position.y as i32,
-                modifiers: match button {
+                modifiers: (match button {
                     PointerButton::Primary => cef_event_flags_t::EVENTFLAG_LEFT_MOUSE_BUTTON.0,
                     PointerButton::Secondary => cef_event_flags_t::EVENTFLAG_RIGHT_MOUSE_BUTTON.0,
                     PointerButton::Middle => cef_event_flags_t::EVENTFLAG_MIDDLE_MOUSE_BUTTON.0,
-                } as _, // No modifiers for simplicity
+                } as u32)
+                    | self.held_keys.get(),
             };
             let mouse_button = match button {
                 PointerButton::Secondary => cef_mouse_button_type_t::MBT_RIGHT,
@@ -472,7 +489,7 @@ impl Browsers {
             let mouse_event = cef::MouseEvent {
                 x: position.x as i32,
                 y: position.y as i32,
-                modifiers: 0,
+                modifiers: self.held_keys.get(),
             };
             browser
                 .host
@@ -930,7 +947,11 @@ impl Browsers {
                 initial_zoom,
                 cookie_flusher,
             ))
-            .with_life_span_handler(LifeSpanHandlerBuilder::build(self.live_browsers.clone()))
+            .with_life_span_handler(LifeSpanHandlerBuilder::build_for(
+                self.live_browsers.clone(),
+                webview,
+                self.popups.clone(),
+            ))
             .with_permission_handler(PermissionHandlerBuilder::build(
                 webview,
                 self.clipboard.clone(),
