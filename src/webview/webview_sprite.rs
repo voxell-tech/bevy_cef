@@ -339,7 +339,11 @@ mod tests {
             ty: RenderPaintElementType::View,
             width,
             height,
-            buffer: vec![0; (width * height * 4) as usize],
+            frame: std::sync::Arc::new(std::sync::Mutex::new(vec![
+                0;
+                (width * height * 4) as usize
+            ])),
+            dirty: vec![URect::new(0, 0, width, height)],
         }
     }
 

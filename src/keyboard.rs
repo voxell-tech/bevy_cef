@@ -1,5 +1,6 @@
 use crate::common::WebviewSource;
 use crate::focus::FocusedWebview;
+use bevy::input::InputSystems;
 use bevy::input::keyboard::KeyboardInput;
 use bevy::prelude::*;
 use bevy_cef_core::prelude::{Browsers, EditCommand, create_cef_key_events, keyboard_modifiers};
@@ -57,6 +58,7 @@ impl Plugin for KeyboardPlugin {
             .init_resource::<IsImeComposing>()
             .init_resource::<CefKeyboardFilter>();
 
+        app.add_systems(PreUpdate, hold_keys.after(InputSystems));
         app.add_systems(
             Update,
             (
@@ -70,6 +72,12 @@ impl Plugin for KeyboardPlugin {
                 .in_set(KeyboardDeliverSet),
         );
     }
+}
+
+/// Tells the engine the modifier keys held, which its mouse events carry, so a page sees a
+/// Ctrl+click or a Shift+click as one.
+fn hold_keys(input: Res<ButtonInput<KeyCode>>, browsers: NonSend<Browsers>) {
+    browsers.set_held_keys(keyboard_modifiers(&input));
 }
 
 /// Workaround: bevy_winit does not call `winit::Window::set_ime_allowed()` during initial window

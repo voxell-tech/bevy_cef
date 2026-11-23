@@ -13,6 +13,13 @@ pub struct WebviewUiMaterial {
     #[texture(0)]
     #[sampler(1)]
     pub surface: Option<Handle<Image>>,
+    /// The node's pixels per texel of the surface (`x`) and per logical pixel
+    /// of the page (`y`), kept by the UI path. A surface painted for another
+    /// size than the node's, while the page catches up with a resize, is drawn
+    /// at its own size from the top left rather than stretched over the node.
+    /// Zero stretches it, as before the first layout.
+    #[uniform(2)]
+    pub scale: Vec2,
 }
 
 impl UiMaterial for WebviewUiMaterial {

@@ -16,16 +16,32 @@ use bevy_cef_core::prelude::RetainedIoSurface;
 /// data, so a not-yet-allocated surface forwards events instead of swallowing
 /// them.
 pub(crate) fn is_pixel_transparent(image: &Image, webview_size: Vec2, pos_dip: Vec2) -> bool {
-    let img_size = UVec2::new(image.width(), image.height());
-    if img_size.x == 0 || img_size.y == 0 || webview_size.x <= 0.0 || webview_size.y <= 0.0 {
-        return false;
-    }
-    let px = dip_to_pixel(pos_dip, img_size, webview_size);
-    let offset = ((px.y * img_size.x + px.x) * 4 + 3) as usize;
     let Some(data) = image.data.as_ref() else {
         return false;
     };
-    data.len() > offset && data[offset] == 0
+    is_frame_pixel_transparent(
+        data,
+        UVec2::new(image.width(), image.height()),
+        webview_size,
+        pos_dip,
+    )
+}
+
+/// Returns `true` when the pixel under `pos_dip` of `pixels`, a BGRA frame of
+/// `size` pixels, is fully transparent. Like [`is_pixel_transparent`], `false`
+/// for a zero-area frame or viewport or a pixel out of range.
+pub(crate) fn is_frame_pixel_transparent(
+    pixels: &[u8],
+    size: UVec2,
+    webview_size: Vec2,
+    pos_dip: Vec2,
+) -> bool {
+    if size.x == 0 || size.y == 0 || webview_size.x <= 0.0 || webview_size.y <= 0.0 {
+        return false;
+    }
+    let px = dip_to_pixel(pos_dip, size, webview_size);
+    let offset = ((px.y * size.x + px.x) * 4 + 3) as usize;
+    pixels.len() > offset && pixels[offset] == 0
 }
 
 /// Returns `true` when the pixel under `pos_dip` is fully transparent (alpha == 0),

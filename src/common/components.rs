@@ -16,6 +16,7 @@ impl Plugin for WebviewCoreComponentsPlugin {
             .register_type::<HostWindow>()
             .register_type::<ZoomLevel>()
             .register_type::<AudioMuted>()
+            .register_type::<WebviewHidden>()
             .register_type::<PreloadScripts>()
             .register_type::<WebviewDpr>()
             .register_type::<WebviewTextureTarget>()
@@ -139,6 +140,18 @@ pub struct ZoomLevel(pub f64);
 #[reflect(Component, Debug, Default, Serialize, Deserialize)]
 pub struct AudioMuted(pub bool);
 
+/// Whether the webview is out of sight. While hidden, CEF stops painting it and throttles its
+/// timers; the texture keeps the last frame it painted.
+#[derive(Reflect, Component, Debug, Copy, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[reflect(Component, Debug, Default, Serialize, Deserialize)]
+pub struct WebviewHidden(pub bool);
+
+/// Lets the page of the webview read the clipboard (`navigator.clipboard.read()`), as a page the
+/// app trusts, such as an editor of its own, needs. A windowless browser shows no permission
+/// prompt; without this the page is denied.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct WebviewClipboard;
+
 /// This component is used to preload scripts in the webview.
 ///
 /// Scripts specified in this component are executed before the scripts in the HTML.
@@ -162,6 +175,16 @@ where
 /// It provides material-type-agnostic access to the webview texture.
 #[derive(Component, Debug, Clone)]
 pub(crate) struct WebviewSurface(pub(crate) Handle<Image>);
+
+/// The frame a `bevy_ui` webview's CPU `OnPaint` path paints, BGRA, for alpha
+/// hit-testing: that webview's image keeps no pixels in the main world, only its
+/// texture in the render world.
+#[derive(Component, Debug, Clone)]
+pub(crate) struct WebviewFrame {
+    pub(crate) frame: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+}
 
 /// [macOS GPU OSR] Per-webview holder of the latest retained IOSurface, used for
 /// on-demand transparent-pixel hit-testing.

@@ -1,6 +1,7 @@
 #![allow(clippy::type_complexity)]
 
 mod common;
+mod console;
 mod cursor_icon;
 mod drag;
 mod focus;
@@ -18,6 +19,7 @@ use crate::common::{
     CefRootCachePath, CefStatus, LocalHostPlugin, MessageLoopPlugin, SandboxMode,
     WebviewCoreComponentsPlugin, WebviewDpiPlugin, add_failed_startup, resolve_no_sandbox,
 };
+use crate::console::ConsolePlugin;
 use crate::cursor_icon::SystemCursorIconPlugin;
 use crate::drag::DragPlugin;
 use crate::focus::FocusPlugin;
@@ -37,6 +39,7 @@ use std::time::Duration;
 
 pub mod prelude {
     pub use crate::common::{CefStartupError, CefStatus};
+    pub use crate::console::ConsoleMessage;
     pub use crate::focus::FocusedWebview;
     pub use crate::keyboard::{CefKeyboardFilter, KeyboardDeliverSet, ModifiersState};
     pub use crate::profile::{
@@ -45,6 +48,7 @@ pub mod prelude {
     };
     pub use crate::resize::components::{AspectLockMode, WebviewResizable};
     pub use crate::{CefPlugin, RunOnMainThread, navigation::*, title::*, webview::prelude::*};
+    pub use bevy_cef_core::prelude::ConsoleLevel;
     pub use bevy_cef_core::prelude::{
         CefCustomScheme, CefExtensions, CefSchemeBody, CefSchemeHandler, CefSchemeOptions,
         CefSchemeRequest, CefSchemeResponse, CommandLineConfig, switches,
@@ -171,6 +175,7 @@ impl Plugin for CefPlugin {
                 ZoomPlugin,
                 AudioMutePlugin,
             ))
+            .add_plugins(ConsolePlugin)
             .add_plugins(ProfilePlugin {
                 cookie_flush_interval: self.cookie_flush_interval,
             });

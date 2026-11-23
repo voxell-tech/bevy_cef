@@ -1,4 +1,4 @@
-use async_channel::Sender;
+use async_channel::{Receiver, Sender};
 use bevy::log::{error, info, trace, warn};
 use bevy::prelude::Entity;
 use bevy::window::SystemCursorIcon;
@@ -9,6 +9,7 @@ use cef::{
 };
 use cef_dll_sys::{cef_cursor_type_t, cef_log_severity_t};
 use std::os::raw::c_int;
+use std::sync::OnceLock;
 
 /// Message sent from the CEF display handler when the browser's URL changes.
 pub struct AddressChangedMessage {
@@ -29,6 +30,37 @@ pub struct TitleChangedMessage {
 pub type TitleChangedSenderInner = Sender<TitleChangedMessage>;
 
 pub type SystemCursorIconSenderInner = Sender<SystemCursorIcon>;
+
+/// How severe a page's console message is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConsoleLevel {
+    Verbose,
+    Info,
+    Warning,
+    Error,
+}
+
+/// Message sent from the CEF display handler when a page writes to its console, or an error
+/// goes uncaught in it.
+pub struct ConsoleMessageMessage {
+    pub webview: Entity,
+    pub level: ConsoleLevel,
+    pub message: String,
+    pub source: String,
+    pub line: i32,
+}
+
+/// The channel every display handler sends its pages' console messages on.
+pub fn console_messages() -> &'static (
+    Sender<ConsoleMessageMessage>,
+    Receiver<ConsoleMessageMessage>,
+) {
+    static CHANNEL: OnceLock<(
+        Sender<ConsoleMessageMessage>,
+        Receiver<ConsoleMessageMessage>,
+    )> = OnceLock::new();
+    CHANNEL.get_or_init(async_channel::unbounded)
+}
 
 /// ## Reference
 ///
@@ -99,12 +131,25 @@ impl ImplDisplayHandler for DisplayHandlerBuilder {
         source: Option<&CefString>,
         line: c_int,
     ) -> c_int {
-        let message = format!(
-            "{}\nline:{line}\n{}",
-            source.map(|s| s.to_string()).unwrap_or_default(),
-            message.map(|m| m.to_string()).unwrap_or_default()
-        );
-        match level.into_raw() {
+        let source = source.map(|s| s.to_string()).unwrap_or_default();
+        let text = message.map(|m| m.to_string()).unwrap_or_default();
+        let raw = level.into_raw();
+        let _ = console_messages().0.try_send(ConsoleMessageMessage {
+            webview: self.webview,
+            level: match raw {
+                cef_log_severity_t::LOGSEVERITY_ERROR | cef_log_severity_t::LOGSEVERITY_FATAL => {
+                    ConsoleLevel::Error
+                }
+                cef_log_severity_t::LOGSEVERITY_WARNING => ConsoleLevel::Warning,
+                cef_log_severity_t::LOGSEVERITY_VERBOSE => ConsoleLevel::Verbose,
+                _ => ConsoleLevel::Info,
+            },
+            message: text.clone(),
+            source: source.clone(),
+            line,
+        });
+        let message = format!("{source}\nline:{line}\n{text}");
+        match raw {
             cef_log_severity_t::LOGSEVERITY_ERROR => {
                 error!("{message}");
             }
